@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mahjong-mc"
+version = "0.1.0"
+description = "Monte Carlo Mahjong: simulate millions of four-player games to test strategies"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+mahjong-mc = "mahjong_mc.mc:main"
+mahjong-mc-play = "mahjong_mc.play:main"
+
+[tool.setuptools]
+packages = ["mahjong_mc"]

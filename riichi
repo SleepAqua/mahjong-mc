@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# One command for everything around the RiichiLab bot.
+#
+#   riichi play [N]     play N ranked games now (default 3), then restore the
+#                       always-on service exactly as it was
+#   riichi watch        watch the current game live in this terminal
+#   riichi status       service state + live rating/rank from the site
+#   riichi report [--write]   daily digest (add --write to save in docs/reports/)
+#   riichi validate     one validation game against 3 tsumogiri bots
+#   riichi sim N        offline Monte Carlo: louis vs the field
+#   riichi ab N         paired A/B test, louis vs gto (use 48000 for a verdict)
+#   riichi stop|start   stop / start the always-on service by hand
+#
+# The RiichiLab server allows ONE connection per bot, so `play` and `validate`
+# stop the service first and restart it afterwards.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+cd "$ROOT"
+
+TOKEN_FILE="$HOME/.config/riichi/token"
+UNIT="riichi-bot.service"
+PY="/usr/bin/python3"
+SERVICE_WAS_ACTIVE=0
+
+usage() {
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+need_token() {
+  [ -r "$TOKEN_FILE" ] || { echo "no bot token at $TOKEN_FILE" >&2; exit 1; }
+  export RIICHI_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+}
+
+preflight() {
+  local code
+  code="$(curl -s -o /dev/null -m 15 -A "Mozilla/5.0" \
+          -w '%{http_code}' "https://api.riichi.dev/api/v1/bots/457" || echo 000)"
+  if [ "$code" != "200" ]; then
+    echo "warning: api.riichi.dev answered $code — the digest at the end may fail"
+    echo "         (the game itself does not use the API, only riichi.dev's game server)"
+    echo "         check Clash if this keeps happening: netfix"
+  fi
+}
+
+banner() {
+  echo
+  echo "  bot      louis (#457)   https://riichi.dev/bots/457"
+  echo "  watch     run this in another terminal:  riichi watch"
+  echo "  replays   https://riichi.dev/games"
+  echo "  process   pid $$"
+  echo
+}
+
+stop_service() {
+  if systemctl --user is-active --quiet "$UNIT"; then
+    SERVICE_WAS_ACTIVE=1
+    echo "stopping $UNIT (one connection per bot)…"
+    systemctl --user stop "$UNIT"
+    sleep 2
+  fi
+}
+
+start_service() {
+  if [ "$SERVICE_WAS_ACTIVE" = "1" ]; then
+    echo "restarting $UNIT…"
+    systemctl --user start "$UNIT"
+  fi
+}
+
+trap start_service EXIT
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  play)
+    n="${1:-3}"
+    need_token
+    preflight
+    stop_service
+    banner
+    echo "playing $n ranked game(s) with policy 'louis'."
+    echo "queued now — a match can take a few minutes; the log below is live."
+    echo "Ctrl-C ends the session cleanly."
+    echo
+    $PY -m mahjong_mc.riichi_ws --policy louis --games "$n" || true
+    echo
+    echo "session ended."
+    start_service
+    $PY tools/riichi_report.py || echo "(digest unavailable — see above)"
+    ;;
+  watch)
+    exec $PY logs/watch.py
+    ;;
+  status)
+    systemctl --user is-active "$UNIT" >/dev/null 2>&1 \
+      && echo "service: running" || echo "service: stopped"
+    preflight
+    $PY tools/riichi_report.py --days 1 || echo "(digest unavailable)"
+    ;;
+  report)
+    exec $PY tools/riichi_report.py "$@"
+    ;;
+  validate)
+    need_token
+    stop_service
+    $PY -m mahjong_mc.riichi_ws --policy louis --validate || true
+    start_service
+    ;;
+  sim)
+    n="${1:-2000}"
+    exec $PY -m mahjong_mc --games "$n" \
+      --policies louis,gto,defensive,greedy --workers 8
+    ;;
+  ab)
+    n="${1:-48000}"
+    exec $PY tools/ab_test.py --games "$n"
+    ;;
+  stop)
+    systemctl --user stop "$UNIT" && echo "stopped"
+    ;;
+  start)
+    systemctl --user start "$UNIT" && echo "started"
+    ;;
+  ""|-h|--help|help)
+    usage 0
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage 1
+    ;;
+esac
