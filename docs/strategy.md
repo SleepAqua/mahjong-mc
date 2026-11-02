@@ -20,17 +20,21 @@ always lone.
 
 Order of disposal, first thrown away → last kept:
 
-| # | tile | rationale |
+| rank | tile | rationale |
 |---|------|-----------|
 | 0 | lone guest wind (客風, neither round nor seat wind) | no yaku, no pair value, one of four |
-| 1 | lone round wind (bakaze) | everyone holds it, only a pair has value |
+| 0 | any honour that has gone **dead** — two copies visible elsewhere, or turn ≥ 7 | a yakuhai you cannot pair is worse than a terminal: it can never form a set |
 | 2 | lone 1 / 9 (1 without 2 or 3, 9 without 7 or 8) | only one run can use it; edge waits are slow |
-| 3 | lone dragon | pair value is real (yakuhai), but a lone dragon is dead weight |
-| 4 | lone seat wind (jikaze) | yakuhai if paired, same as dragons but one copy of value |
-| 5 | lone 2 / 8 | two runs possible but both are edge-ish, weak acceptance |
-| 6 | lone 3 / 7 | better acceptance than 2/8 |
-| 7 | lone 4 / 6 | can accept either side |
-| 8 | lone 5 | most central, most acceptance, also has red-five value |
+| 3 | lone round wind (bakaze) and lone dragon | yakuhai once paired: 1 han and pon-able, so it outlives a terminal |
+| 4 | lone seat wind (jikaze) | same value as a dragon, but only one copy is worth anything |
+| 5 | lone 2 / 8 | two runs possible but both end in an edge wait |
+| 6 | lone 3 / 7 | strictly better acceptance than 2/8 |
+| 7 | lone 4 / 6 | accepts either side |
+| 8 | lone 5 | most central, most acceptance, and red-five value |
+
+Lower rank is thrown sooner. The table has no rank 1: the round wind used to sit
+there, ahead of the terminals, which was wrong — it is yakuhai, so it belongs
+with the dragons.
 
 **Where this deviates from standard theory — one entry only.** Your list keeps
 dragons and the seat wind *after* the terminals, which is textbook: a live
@@ -54,6 +58,13 @@ the behaviour this rule exists to prevent. `tests/test_louis_policy.py` now
 pins it, including the hand from that game.
 
 `_lone_rank()` / `_is_lone()`.
+
+**This rule is worth real points, measured.** Cutting it back to "authoritative
+for the first six draws only" — i.e. after the opening, let tile efficiency
+decide — lost 87 points per game and 1.9 points of win rate (9,000 mirrored
+deals, ±63). Cutting it to three draws lost 1.3 points of win rate. The lone
+table is not a beginner's opening heuristic that gets outgrown; it is doing
+work all the way through the hand.
 
 ---
 
@@ -107,26 +118,63 @@ normal structure.
 
 ## 5. Folding and pushing (rule 6)
 
-The flat version — fold whenever someone riichis and we are not tenpai — is
-what the first build did, and it is right far more often than attacking. It is
-now value-aware (`_should_fold`), because "tenpai" is not the same as "worth
-pushing":
+The flat version — fold whenever someone riichis and we are not tenpai — is what
+the first build did, and it is right far more often than attacking. But folding
+is not free either: a clean fold still pays the noten penalty, worth roughly
+1,500 points. So the decision is an expectation, not a threshold (`_should_fold`,
+`_push_ev`):
 
-| our state | decision |
-|---|---|
-| not tenpai | fold |
-| tenpai, live winning tiles ≥ `PUSH_COPIES` (6) | push |
-| tenpai, hand value ≥ `PUSH_VALUE` (3900 pts) | push |
-| tenpai, narrow wait and cheap hand | fold — a 1,000-point hand is not worth a 20% chance of paying 8,000 |
-| 1-shanten, value ≥ `SEMI_PUSH_VALUE` (7700) and wall ≥ 30 | semi-push: keep attacking, but safety still ranks the discards |
+    push_ev = p_win × value − p_loss × loss − noten      fold_ev = −1,500
 
-Hand value is a rough han estimate (riichi + dora + tanyao + yakuhai pairs)
-mapped through the real scoring table. In betaori the policy stops caring about
-shape and throws the safest tile in hand, preferring one from a safe pair so its
-twin is a guaranteed safe discard next turn.
+    fold when shanten ≥ 3, or when push_ev < fold_ev
+
+* `p_win` — tenpai: 5% per live winning tile, capped at 85%. One shanten: 1.8%
+  per tile, capped at 40%. Anything further: 2%.
+* `value` — points if the hand is won (see below).
+* `p_loss` — `risk × 0.10` at tenpai, `× 0.16` at one shanten, `× 0.22` further,
+  capped at 55%. `risk` is the danger of what we would have to throw, on the
+  0–2 scale from §6.
+* `loss` — `LOSS_POINTS` (5,200), ×1.5 as dealer.
+* `noten` — 1,500 when we are not tenpai, because a fold at a draw still pays.
+
+`value` comes from a han estimate (riichi + dora + tanyao + yakuhai pairs) put
+through the real scoring table. A more honest version exists behind
+`SCORED_VALUE`: it discards each candidate, and for the discards that leave
+tenpai it scores every winning tile with `scoring.score_hand` — so pinfu,
+iipeikou and the shape of the wait count. It measured level with the estimate,
+which says the estimate is good enough at the precision push/fold needs.
+
+In betaori the policy stops caring about shape and throws the safest tile in
+hand, preferring one from a safe *pair* so its twin is a guaranteed safe discard
+next turn (mawashiuchi).
 
 When we *are* attacking, danger is subtracted from every candidate's score
 (×`DANGER_WEIGHT`), so among equally strong discards the safe one wins.
+
+**From 4th place, push only when the gap is real.** `_score_pressure` used to
+return "push harder" whenever we were last with the wall under 35 — the single
+place where the policy changed behaviour on score alone. In the 100 logged
+online games 51% of our deal-ins happened in 4th place against 30% of our
+discards, about double the per-discard rate. It now pushes only when third is
+`DESPERATE_GAP` (12,000) or more ahead, i.e. when a mangan would not save the
+placement and folding would not either. That rule cannot be tested locally: the
+simulator plays one independent kyoku per game and resets the scores, so the
+score situation never exists (§9).
+
+**Tuning the two constants, measured** (9,000 mirrored deals each):
+
+| change | score diff vs shipped | verdict |
+|---|---|---|
+| `LOSS_POINTS` 4,000 → | +14.7 ±12.9 | worse: a deal-in really does cost about 5,000 |
+| `LOSS_POINTS` 6,500 → | +3.7 ±6.5 | level |
+| `DANGER_WEIGHT` 1.0 → | −3.3 ±7.7 | level |
+| `DANGER_WEIGHT` 3.0 → | −1.9 ±3.2 | level |
+| fold cost from the cheapest discard, not the hand mean | +14.4 ±30.5 | level |
+
+The flat danger response is the interesting one: doubling or halving how hard
+danger pushes the discard choice changes nothing measurable. The *ordering* of
+tiles matters, the weight does not — which is what you would expect once the
+decision is "fold or not, then throw the safest".
 
 ---
 
@@ -151,13 +199,35 @@ every player currently in riichi:
   `visible >= 4 → safe` case.
 
 When nothing is fully safe, `_danger()` ranks the candidates: honours ≈ 40,
-1/9 ≈ 55, 2/8 ≈ 70, 3/7 ≈ 85, 4/5/6 ≈ 100, minus 25 if three copies are
-visible (a thin wait is a smaller bet). The cheapest tile is discarded, which is
-the practical version of "fold with the least bad tile".
+1/9 ≈ 55, 2/8 ≈ 70, 3/7 ≈ 85, 4/5/6 ≈ 100, minus 25 if three copies are visible
+(a thin wait is a smaller bet), plus a reading adjustment from that opponent's
+discard order (`_pond_read`): a suit they have cut four times is discounted, a
+late discard two steps away in the same suit (matagi-suji) raises the danger, an
+early 5 raises the 1-4 and 6-9 neighbourhoods. The score is computed **per
+threat** and averaged: a tile in one player's pond is still live against the
+other two, and treating "safe" as all-or-nothing under-read the danger of a
+second opponent.
 
-Deliberately **not** implemented: opponent hand-reading from discard patterns,
-matagi-suji, and betaori that preserves tenpai. They need either more state than
-the `View` exposes or a trained model; see §9.
+Who counts as a threat is the sharpest question in this file. Only riichi
+players are certain, and over the 100 logged games 62% of our deal-ins came from
+them — but 30% came from **open** hands and 8% from dama, and those 38% were
+invisible to the threat list. Two ways of widening it were built and measured:
+
+| widening | score diff vs shipped | verdict |
+|---|---|---|
+| open hands (visible melds) count as threats | +30, 4th% flat | level-to-worse |
+| open hands, plus everyone once wall ≤ 45 | +5 to +7, 4th% flat | level |
+| suji carries residual danger (0.3 of a fresh tile) instead of 0 | +35, 4th% flat | level-to-worse |
+
+Folding earlier against hands you cannot see did not pay: the extra defence cost
+more wins than the deal-ins it avoided. All three remain as switches
+(`SOFT_DANGER`, `SOFT_WALL`, `SUJI_RESIDUAL`) rather than defaults. The honest
+reading is that the danger model's *ordering* is good but the policy's ability
+to tell dama from a normal hand is absent, and no cheap heuristic fixes that.
+
+Deliberately **not** implemented: inferring dama tenpai from discard patterns (a
+trained model, not a rule), and betaori that preserves tenpai (it needs the
+full table state to judge whether that is even legal — see §9).
 
 ---
 
@@ -185,36 +255,94 @@ Note: the RiichiLab server scores wins itself, so online the bot only has to
 
 ## 8. When the bot riichis and when it calls
 
-Not in your list, but the bot needs a rule:
+Not in your list, but the bot needs a rule. The numbers that shaped them come
+from 100 logged online games: we were winning 17.2% of kyoku against the field's
+23.9% and calling 0.15 times per kyoku against its 0.41 — the least active
+player at the table.
 
-* **riichi** when tenpai, no commitment to kokushi, wall ≥ 10 tiles, and
-  (a) nobody is in riichi, or (b) exactly one is and our wait has ≥ 6 live
-  copies. Two or more riichi ⇒ no riichi.
-* **calls**: peng only, and only on a yakuhai tile, and only when it strictly
-  lowers shanten. No chi (an open hand without a yaku is a dead hand), no
-  daiminkan (too slow, kills concealment). Chiitoitsu and kokushi are closed
-  hands by definition, so calling them away is never right.
-* **kan**: ankan only for a dora tile or when shanten ≥ 2. Added kan
-  (shouminkan) is never taken — it invites chankan for no gain.
+**When we riichi.** Tenpai, no kokushi commitment, wall ≥ 10, and (a) nobody in
+riichi, or (b) exactly one and our wait has ≥ 6 live copies. Two or more riichi
+and we do not. Late and narrow (turn ≥ 10, under 4 live tiles) stays dama, so we
+keep the option to fold. Riichi is where 68% of our wins come from, so the gate
+is deliberately permissive.
+
+A stricter version — require the hand to be worth 2,000 points of real score
+before declaring — was built and measured: it lost **147 points per game and 3
+points of win rate**. Refusing a riichi to keep the option of folding throws
+away the hands that actually win. The gate stays permissive; `RICHI_MIN_VALUE`
+exists for a field where riichi gets punished harder than this one.
+
+**When we call.** Any call has to survive two filters, in this order:
+
+1. *the hand keeps a yaku once open* (`_open_yaku_ok`). An open no-yaku hand is
+   dead, so a call that cannot reach yakuhai, tanyao or a one-suit hand is never
+   taken. This is why chi is allowed at all — the old "peng only" version was
+   stricter than the yaku rule needs.
+2. *the call is worth it*: it must strictly lower shanten. Two loosenings sit
+   behind switches, measured at 9,000 mirrored deals each and both level: a
+   pon of a value honour even at three shanten (`YAKUHAI_CALL_SHANTEN`), and a
+   call that keeps shanten but adds at least three ukeire (`CALL_SPEEDUP`).
+   They moved average rank by ~0.015 in our favour and nothing else, so they
+   are off — a real field with more open play is where to retest them.
+
+Daiminkan is never taken (kills concealment for one extra draw). Chiitoitsu and
+kokushi are closed by definition.
+
+**Kan**: ankan only for a dora tile or when shanten ≥ 2. Added kan
+(shouminkan) is never taken — it invites chankan for no gain.
 
 ---
 
 ## 9. Measured results
 
+### The local field (single kyoku)
+
 Monte Carlo, 20,000 games, seed 42, 8 workers — all four seats in one field:
 
     seat policy          win%   tumo%    ron%  deal-in%  riichi%  pts/game  avg rank
     --------------------------------------------------------------------------------
-       0 louis         22.48%   5.67%  16.82%    11.71%   38.35%     235.2     2.316
-       1 gto           19.18%   5.38%  13.80%    12.16%   31.51%     -17.3     2.355
-       2 defensive     16.48%   4.29%  12.19%    15.59%   12.62%    -133.8     2.085
-       3 greedy        16.52%   4.46%  12.05%    15.42%   13.14%     -96.0     2.082
+       0 louis         23.25%   5.83%  17.43%    11.62%   34.92%     268.1     2.267
+       1 gto           19.32%   5.29%  14.03%    12.50%   32.42%       4.7     2.368
+       2 defensive     16.39%   4.26%  12.13%    15.32%   12.83%    -135.2     2.088
+       3 greedy        16.20%   4.41%  11.79%    15.95%   13.37%    -139.1     2.110
 
 `avg rank` flatters the low-variance bots: `defensive` folds so much it rarely
 loses big and rarely wins big. `pts/game` is the honest metric, and `louis` is
-+228 points per game ahead of the previous champion.
++263 points per game ahead of the next policy.
 
----
+**Know what this table cannot see.** Every simulated game is *one independent
+kyoku*: scores reset to 25,000, no carry-over, no dealer rotation, no all-last.
+So every placement rule — protecting a lead, pushing from 4th, the entire reason
+the online rating exists — is invisible here. `_score_pressure` returns 0 at
+every simulated decision, which is why it can be rewritten without this table
+flickering. A hanchan simulator (kyoku chained with score carry-over) is the
+single biggest missing tool in this repo.
+
+### The real field (100 logged games, 949 kyoku)
+
+                        us      field
+    agari per kyoku     17.2%   23.9%
+    deal-in per kyoku   29.4%   19.8%
+    riichi per kyoku    0.22    0.26
+    calls per kyoku     0.15    0.41
+    noten at draws      46% of 120 exhaustive draws
+
+Same policy, same engine, two and a half times the deal-in rate of the local
+field. The local opponents reach tenpai less often and pass up wins the online
+field takes, so this simulator can rank *aggressive* changes and cannot rank
+*defensive* ones. Two signals worth acting on:
+
+* **We are the least active player at the table** — a third of the calls, fewer
+  riichi, 6.7 points less win rate. Passivity in speed plus lateness in defence
+  is the worst combination, and 51% of our deal-ins happened in 4th place
+  against 30% of our discards.
+* **46% noten at draws** — nearly half of the exhaustive draws had us paying the
+  noten penalty. That is free points to the table and a sign the hands stall.
+
+Fixing those by folding more (open hands and dama as threats) or by making suji
+stricter was measured and did not pay (§5, §6). The leak is not in the discard
+rules; it is in the driver (§11) and in what the bot cannot see at all —
+placement and dama.
 
 ## 10. Can the bot learn from its own games (rule 11)?
 
@@ -294,10 +422,22 @@ place that tells us whether it worked.
    stays damaten: a bad wait late wins ~33%, and damaten keeps the option to
    fold if someone else declares. [S16][S17]
 
-### Changes I would make but did not (your call, one line each)
+### Changes I would make but did not
 
 * **kokushi tenpai skips riichi.** Riichi is legal and adds value; the bot
   declines it. Conservative, not wrong.
+* **A hanchan simulator.** Every game here is one kyoku with reset scores, so
+  placement — the thing the online rating actually measures — cannot be tuned
+  at all. Chaining kyoku with score carry-over, dealer rotation and honba is the
+  highest-value piece of missing infrastructure. See §9.
+* **Placement-aware endgame.** Blocked on the above, not on ideas: the `View`
+  has points but no round index, so "is this the last hand" cannot be answered.
+* **Dama inference.** 38% of online deal-ins came from hands that never declared
+  riichi, and no cheap heuristic improved on ignoring them (§6). This needs a
+  model trained on opponent discards, not another threshold.
+* **Retest the call loosenings against a real field.** They measured level here
+  and ~0.015 places better in rank; in an arena where opponents open more, a
+  third of the field's call rate is worth revisiting before dismissing.
 
 ### Applied after the evaluation above
 
@@ -312,99 +452,99 @@ place that tells us whether it worked.
   neighbourhoods. Crude, but it sees what suji alone cannot.
 * **rule 6: push/fold by hand value** instead of "tenpai or not" — see §5.
 
-### The 2026-11-02 losing streak: what the games actually say
+### Where the online losses actually came from
 
-Six consecutive 4ths (11:49–12:18), all narrow (−5100, +10900, −6500, −3500,
-+9200, +6700), none of them chombos. Across the 100 logged games (949 kyoku):
+The 2026-11-02 six-in-a-row was not a strategy problem — it was the legality
+layer. Worth understanding because it is a class of bug, not an incident.
 
-    us      agari 17.2%/kyoku   deal-in 29.4%
-    field   agari 23.9%         deal-in 19.8%
+**The server speaks a different tile vocabulary than the engine.** A red five is
+`5pr` to the server and tile id 13 to a 34-type engine. The engine is right to
+merge them (a red 5 *is* a 5 for shape), but every message the bot sends back
+carries that id into the server's space, and there the spelling matters:
 
-so the bot was not unlucky, it was losing the fight on both sides of the table.
-Where the deal-ins came from: 62% to a declared riichi, 30% to an **open**
-hand, 8% to dama. And 51% of them happened while we were in 4th place, against
-30% of our discards — about twice the deal-in rate per discard, in the one place
-the policy deliberately changes behaviour (`_score_pressure` returned "+1 push"
-from 4th regardless of the gap).
+* `dahai` — the server lists both `5pr` and `5p` when both copies are in hand,
+  **red first**. Matching by tile type and taking the first hit threw the aka
+  dora away 54 times in 100 games while a plain five sat in the hand. The
+  discard legaliser now prefers the plain spelling and only takes the red when
+  it is the only copy.
+* `chi` / `pon` / `kan` — the `consumed` list must name the copies the server
+  thinks you used. Sending `consumed: ["5p","5p"]` while holding `5pr` got
+  `not_in_legal_actions`, and the round was scored as a **chombo**: a mangan
+  paid and the kyoku over. Claims are now answered with the server's own option
+  dict, matched on tile type plus the multiset of consumed tiles (so the right
+  chi sequence is still chosen when two are available).
+* **value** — a red five is a han the 34-type engine cannot count. The driver
+  tracks the red fives it holds and adds them to `dora_count`, so `_hand_value`
+  stops pricing them as plain tiles.
 
-What that produced:
+The lesson generalises: a bot's own tile encoding is an internal affair; the
+wire protocol has to be answered in the server's words, and any place where the
+two are compared by string is a place where a chombo is waiting.
 
-* **chombo from claim spelling.** Two chombos in the logs were `chi`/`pon`
-  sent with `consumed: ["5p","5p"]` while one copy was the red five; the server
-  answered `not_in_legal_actions` and ended the round (mangan). Claims are now
-  answered with the server's own option dict.
-* **red fives thrown away.** 54 discards took the aka dora out while a plain
-  copy was in hand, because the server lists `5pr` before `5p` and the driver
-  took the first match.
-* **red fives not valued.** The 34-type engine cannot see that a 5 is red, so
-  `_hand_value` under-counted every hand holding one by a han. The driver now
-  tracks the red fives it holds and adds them to `dora_count`.
-* **desperation push.** The 4th-place push is now gated on the gap to third
-  (`DESPERATE_GAP`, 12,000): push when a mangan will not save the placement,
-  play normally when it will.
-
-### What was tried and rejected (measured, not argued)
-
-Paired A/B, 24,000 games each, fixed seed, seats rotated:
-
-    variant                                 excess vs control      verdict
-    open hands / late hand as threats       +30 pts, 4th% flat     neutral
-    suji keeps residual danger (0.3)        +35 pts, 4th% flat     neutral
-
-Both were worth testing — 38% of the deal-ins are to hands the threat list
-ignored — but neither pays for the extra folding in this field. They stay as
-off-by-default switches (`SOFT_DANGER`, `SUJI_RESIDUAL`).
-
-**Harness caveat, now fixed:** `tools/ab_test.py` pinned A to seat 0, and a
-policy playing itself "won" +75 points and 0.14 places. Seats now rotate. Any
-pre-2026-11 A/B result smaller than that offset is not evidence.
-
-**Simulator caveat:** the local field deals in 11.6% where the online field
-deals in 29.4% for the same policy. The local sim cannot rank defensive
-changes for the online arena; it can only reject clearly bad ones.
 
 
 ### Measurement honesty, and how many games a test needs
 
-Rules changes are easy to make and hard to prove. Three independent 1,000-game
-blocks (seeds 42, 3000, 6000, refined policy):
+Rule changes are easy to make and hard to prove. Three independent 1,000-game
+blocks of the same policy disagreed by ±200 points per game — a 1k run cannot
+rank two policies, only catch a gross regression:
 
     block      louis pts/game    gto pts/game
     seed 42        -67.1            +136.2
     seed 3000     +305.8             -33.4
     seed 6000     +186.7             +83.9
 
-Per-block spread is ±200 points per game: a 1k run cannot rank two policies, it
-can only catch a gross regression.
+The right test is **paired**: both policies play the same deals, so deal luck
+cancels in the per-game difference. Two things had to be fixed before those
+numbers meant anything:
 
-The right test is **paired**: both policies play the same deals, so the per-game
-score difference cancels the deal luck. Measured on a 2,000-game pilot the
-difference has sd ≈ 5,600 points/game, so
+* **Seat bias.** `ab_test.py` used to pin A to seat 0 and B to seat 1. A policy
+  playing *itself* "won" +75 points and 0.14 places — larger than most real
+  effects, so that offset silently blessed every change.
+* **Deal luck.** Rotating seats was not enough; the same policy still "won"
+  +75. Each deal is now played twice with A and B swapping seats, and the two
+  results are averaged. A policy against itself returns exactly +0.0 ±0.0.
 
-    SE = 5600 / sqrt(N)   →  N = (1.96 * 5600 / target_SE)^2
+Mirroring also shrinks the variance a lot, because the two halves share a deal:
 
-| target SE | games | CI half-width | wall time (8 cores) |
-|-----------|-------|---------------|---------------------|
-| 125 | 2,000 | ±245 | <1 min |
-| 50 | 48,000 | ±98 | ~10 min |
-| 25 | 193,000 | ±49 | ~30 min |
+| test | sd of the paired diff | 9,000 deals resolves |
+|---|---|---|
+| one game per deal (old) | ≈ 5,900 | ±76 |
+| mirrored pair (now) | ≈ 1,300 | ±27 |
+| mirrored, change rarely fires | ≈ 150–660 | ±3 to ±14 |
 
-For tuning decisions use **48,000 paired games** — that resolves a 100 pt/game
-difference at 95% confidence in about ten minutes. Use 1k only as a smoke test.
+So **9,000 mirrored deals (18,000 games, ~2.5 min on 8 cores)** is enough to
+call a 30-point difference, and a 3–5 point difference when the change only
+fires in rare spots. Use `--pilot` to see the sd before committing to a size.
 
     python3 tools/ab_test.py --pilot 2000     # measure variance, get the N
-    python3 tools/ab_test.py --games 48000    # the real test
+    python3 tools/ab_test.py --games 9000     # the real test
 
-Results, paired, field defensive/greedy:
+Results from the current harness (9,000 mirrored deals each, field
+defensive/greedy, A = shipped policy):
 
-| test | games | result | verdict |
-|---|---|---|---|
-| `louis` (rule refinements) vs `gto` | 48,000 | +185.7 ±53.0, win 21.9% vs 19.5%, rank 2.321 vs 2.514 | louis better |
-| `louis` (evolved weights) vs `louis_old` (pre-evolution) | 48,000 | +58.7 ±52.2, win 21.8% vs 20.6%, rank 2.309 vs 2.477 | tuned better |
-| current `louis` vs `gto` | 12,000 | +205.7 ±105.0, win 22.1% vs 19.2% | louis better |
+| change | score diff | verdict |
+|---|---|---|
+| rule 1 stops being authoritative after 6 draws | +87.4 ±63.4 | worse |
+| rule 1 after 3 draws | +12.4 ±71.5 | worse on win rate |
+| riichi needs a 2,000-point hand | +146.8 ±27.4 | much worse |
+| value honours pon-able at 3 shanten + acceptance calls | +8.7 ±21.8 | level |
+| calls allowed at 3 shanten | +11.4 ±23.3 | level |
+| noten sprint at wall ≤ 25 | +6.5 ±13.6 | level |
+| `LOSS_POINTS` 4,000 | +14.7 ±12.9 | worse |
+| `LOSS_POINTS` 6,500 | +3.7 ±6.5 | level |
+| `DANGER_WEIGHT` 1.0 / 3.0 | −3.3 / −1.9 | level |
+| fold cost from cheapest discard | +14.4 ±30.5 | level |
 
-`louis_old` = identical code with the original weights, so the second row isolates
-the evolution step: +59 points per game, roughly a third of the gap to `gto`.
+Two of those are the useful ones. Rule 1 and the 5,200-point deal-in cost are
+load-bearing — weakening either costs real points. The rest are level, which is
+what a policy that has been tuned for months should look like: the remaining
+gains are not in the knobs.
+
+Earlier numbers in this document (48,000-game paired runs, ±53) came from the
+unmirrored harness. They are still meaningful where the effect was much larger
+than the +75 seat offset — `louis` vs `gto` at +186 — but anything small from
+before that fix should be treated as unresolved.
 
 ### Human benchmark (the target)
 

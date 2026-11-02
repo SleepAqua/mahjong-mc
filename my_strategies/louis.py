@@ -181,14 +181,10 @@ class LouisPolicy(Policy):
     # defaults = the evolved weights (see docs/strategy.md §11). The JSON
     # sidecar overrides these, but if it is missing these are still the tuned
     # values, not the original guesses.
-    PUSH_COPIES = 8        # live winning tiles that justify pushing at one riichi
-    PUSH_VALUE = 4011      # hand value (points) that justifies a narrow push
-    SEMI_PUSH_VALUE = 7142  # value that keeps a 1-shanten hand attacking
     HONOR_DEAD_TURN = 7    # turn after which a lone yakuhai is dead
     DANGER_WEIGHT = 2.0     # how hard danger subtracts from an attacking discard
     CALL_MAX_SHANTEN = 2    # only call when the hand is this close
     BLOCK_CUT = True        # five-block theory: cut the weakest of 6+ blocks
-    EV_FOLD = True          # push/fold by expectation, not by threshold
 
     # ---- threats that are not in riichi ------------------------------
     # Over the 100 logged games 30% of our deal-ins went to *open* hands and
@@ -201,6 +197,19 @@ class LouisPolicy(Policy):
     SOFT_WALL = 45          # wall_left at/below which every opponent counts
     SOFT_FOLD_SHANTEN = 2   # shanten at which soft threats are enough to fold
     SUJI_RESIDUAL = 0.0     # suji danger as a fraction of a fresh tile (0=free)
+
+    # ---- speed, value, and where the leak actually is ----------------
+    # We call 0.15/kyoku where the online field calls 0.41, win 17% of kyoku
+    # where the field wins 24%, and are noten in 46% of exhaustive draws.
+    CALL_SPEEDUP = 0        # min ukeire gain that justifies a call at equal shanten
+    YAKUHAI_CALL_SHANTEN = 0  # pon a value honour at up to this shanten (0=off)
+    NOTEN_SPRINT_WALL = 0   # at/below this wall_left, sprint for tenpai (0=off)
+    SCORED_VALUE = False    # value the wait with the real scorer, not the table
+    RICHI_MIN_VALUE = 0     # minimum points to declare riichi (0 = any tenpai)
+    CANDIDATE_RISK = False  # fold cost from the cheapest discard, not the hand mean
+    LONE_AUTHORITY_TURNS = 99  # rule 1 outranks tile efficiency for this many draws
+    LOSS_POINTS = 5200      # points a deal-in costs, before dealer doubling
+    FOLD_EV = -1500         # what a clean fold is worth; push must beat it
     PUSH_WHEN_LAST = True   # from 4th place late in the hand, push harder…
     DESPERATE_GAP = 12000   # …but only when 3rd is this far ahead (a mangan
                             # will not save the placement, folding cannot either)
@@ -343,9 +352,47 @@ class LouisPolicy(Policy):
             adj += 8
         return adj
 
+    def _scored_value(self, view, total) -> int:
+        """Points of the actual wait, scored by the engine's real scorer.
+
+        The table in `_hand_value` cannot see pinfu, iipeikou or the wait
+        itself, so a ryanmen pinfu and a kanchan tanki of the same "han
+        estimate" were valued identically. Only tenpai hands can be scored
+        exactly, which is precisely where push/fold is decided.
+        """
+        from mahjong_mc.scoring import score_hand
+        dora = getattr(view, "dora_count", 0) or 0
+        best = 0
+        # `total` holds 14 tiles (we have just drawn), so every candidate is
+        # discard-then-score: only the discards that leave tenpai can be
+        # valued exactly, and those are the ones push/fold turns on.
+        for d in set(view.hand):
+            c13 = list(total)
+            c13[d] -= 1
+            if shanten(c13) != 0:
+                continue
+            tiles, _ = ukeire(c13, view.unseen_counts())
+            for t in tiles:
+                c14 = list(c13)
+                c14[t] += 1
+                # a closed hand counts as if we riichi, as the heuristic does
+                res = score_hand(c14, list(view.melds), t, tsumo=False,
+                                 dealer=view.dealer, seat=view.seat,
+                                 dora=dora, riichi=not view.melds)
+                if not res:
+                    continue
+                pts = (res["ron_oya"] if view.seat == view.dealer
+                       else res["ron_ko"])
+                best = max(best, pts)
+        return best
+
     def _hand_value(self, view, total) -> int:
         """Rough points if this hand is won. Riichi only counts when closed:
         an open hand must earn its han from yaku (yakuhai, tanyao, honitsu)."""
+        if self.SCORED_VALUE:
+            scored = self._scored_value(view, total)
+            if scored:
+                return scored
         han = 0.0 if view.melds else 1.0              # riichi
         han += getattr(view, "dora_count", 0) or 0
         if not any(t >= 27 or (t % 9) in (0, 8) for t in range(34) if total[t]):
@@ -369,6 +416,19 @@ class LouisPolicy(Policy):
                 for t in set(view.hand)]
         return (sum(vals) / len(vals) / 100.0) if vals else 0.0
 
+    def _risk(self, view, total, threats):
+        """What pushing actually costs: the tile we would throw, not the mean.
+
+        Averaging over the whole hand charges a hand holding one dangerous
+        tile as if every tile were dangerous, so it folded hands that had a
+        genbutsu to spare.
+        """
+        if self.CANDIDATE_RISK and threats:
+            vals = [self._danger(view, t, threats) for t in set(view.hand)]
+            if vals:
+                return min(vals) / 100.0
+        return self._avg_danger(view, total, threats)
+
     def _push_ev(self, view, total, threats, sh):
         """Expected points of pushing, versus the ~-1500 of a fold.
 
@@ -387,9 +447,9 @@ class LouisPolicy(Policy):
         else:
             p_win = 0.02
         value = self._hand_value(view, total)
-        risk = self._avg_danger(view, total, threats)
+        risk = self._risk(view, total, threats)
         p_loss = min(0.55, risk * (0.10 if sh == 0 else 0.16 if sh == 1 else 0.22))
-        loss = 5200.0 * (1.5 if view.dealer == view.seat else 1.0)
+        loss = self.LOSS_POINTS * (1.5 if view.dealer == view.seat else 1.0)
         noten = 0.0 if sh == 0 else 1500.0
         return p_win * value - p_loss * loss - noten
 
@@ -428,7 +488,7 @@ class LouisPolicy(Policy):
         if not threats:
             return False
         pressure = self._score_pressure(view)
-        fold_ev = -1500.0
+        fold_ev = float(self.FOLD_EV)
         if pressure > 0:
             fold_ev -= 700.0               # in last place a fold costs more
         elif pressure < 0:
@@ -483,6 +543,18 @@ class LouisPolicy(Policy):
             # middle is not worth a deal-in to a hand we cannot see
             folding = True
 
+        if (self.NOTEN_SPRINT_WALL and not tenpai and not threats
+                and best_sh <= 1 and view.wall_left <= self.NOTEN_SPRINT_WALL):
+            # A noten draw is a guaranteed 1,000-3,000; a 1-shanten hand that
+            # converts in one draw keeps it. With nobody in riichi there is
+            # nothing to run from, so take the tenpai.
+            def sprint_key(x):
+                avail = list(unseen)
+                avail[x[1]] = max(0, avail[x[1]] - 1)
+                _, copies = ukeire(x[2], avail)
+                return (8 * copies + _shape_score(x[2]) * 3, self.rng.random())
+            return max(pool, key=sprint_key)[1]
+
         if folding:
             # betaori: safety first, hand shape ignored. Among equally safe
             # tiles prefer one from a *pair* that is already safe — its twin
@@ -513,7 +585,8 @@ class LouisPolicy(Policy):
                 self.rng.random(),
             ))[1]
 
-        lone_pool = [x for x in pool if _is_lone(total, x[1])]
+        lone_pool = ([x for x in pool if _is_lone(total, x[1])]
+                     if view.turn <= self.LONE_AUTHORITY_TURNS else [])
         if lone_pool:
             return min(lone_pool, key=lambda x: (
                 _lone_rank(total, x[1], seat, dealer, turn=view.turn,
@@ -565,11 +638,17 @@ class LouisPolicy(Policy):
     def decide_call(self, view, tile, options):
         total = view.total_counts
         s0 = shanten(total)
-        if s0 > self.CALL_MAX_SHANTEN:
-            return None
         yakuhai = tile in DRAGONS or tile in (WINDS[_seat_wind(view.seat,
                                                                view.dealer)],
                                              27)
+        # A pon of a value honour is the yaku itself: it is worth taking even
+        # when the hand is still three away, which is how the field reaches
+        # tenpai so much earlier than we did (0.41 calls/kyoku vs our 0.15).
+        limit = self.CALL_MAX_SHANTEN
+        if yakuhai and self.YAKUHAI_CALL_SHANTEN > limit:
+            limit = self.YAKUHAI_CALL_SHANTEN
+        if s0 > limit:
+            return None
         for act in options:
             kind, trio = act[0], act[1]
             if kind == "shouminkan":
@@ -603,6 +682,21 @@ class LouisPolicy(Policy):
                     best = s
             if best is not None:
                 return act
+            if self.CALL_SPEEDUP and best == s0:
+                # same shanten, but the call opens a much wider path to it
+                base = ukeire(total, view.unseen_counts())[1]
+                c2 = list(total)
+                c2[tile] += 1
+                for x in consumed:
+                    c2[x] -= 1
+                for x in set(c2):
+                    if c2[x] <= 0:
+                        continue
+                    c2[x] -= 1
+                    gain = ukeire(c2, view.unseen_counts())[1]
+                    c2[x] += 1
+                    if gain >= base + self.CALL_SPEEDUP:
+                        return act
         return None
 
     def decide_riichi(self, view):
@@ -622,6 +716,11 @@ class LouisPolicy(Policy):
         # no riichi but late and narrow: a bad wait late wins ~33%, damaten
         # keeps the option to fold when someone else declares
         if view.turn >= 10 and copies < 4:
+            return False
+        # riichi locks the hand: a 1-han tanki is not worth losing the ability
+        # to fold, and the table below cannot see the wait. 28 of 195 logged
+        # deal-ins happened in kyoku where we had already declared.
+        if self.RICHI_MIN_VALUE and self._hand_value(view, total) < self.RICHI_MIN_VALUE:
             return False
         return True
 

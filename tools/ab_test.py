@@ -9,6 +9,9 @@ games are needed.
     python3 tools/ab_test.py --pilot 2000          # measure variance, tell N
     python3 tools/ab_test.py --games 20000         # run the real test
 
+Every deal is played twice, with A and B swapping seats, and the results are
+averaged: that cancels positional edges exactly, at twice the game count.
+
 Seats rotate per game (A and B sit in every seat pair equally often) and the
 dealer is chosen independently of where A sits, so neither policy gets a
 positional edge. Fixed seats matter: seat 0 used to beat itself by +72 points.
@@ -36,30 +39,35 @@ def _worker(args):
         [], [], [], 0, 0, 0, 0
     for k in range(count):
         seed = seed0 + k
-        # Rotate the seats. Fixed seats 0/1 gave seat 0 a free +72 points and
-        # 0.14 places (v_base vs v_base "won" +72 ±105), which is larger than
-        # most real effects and would have masked them.
+        # Mirrored pairs: the same deal is played twice with A and B in each
+        # other's seats, and the two results are averaged. Rotating seats
+        # alone still left a +75-point edge for seat A (a policy against
+        # itself "won" by that much), which is bigger than most real effects.
         seat_a = seed % 4
         seat_b = (seat_a + 1) % 4
         dealer = (seed // 4) % 4          # independent of where A sits
-        names = [None] * 4
-        names[seat_a] = a
-        names[seat_b] = b
-        rest = iter(field)
-        for s in range(4):
-            if names[s] is None:
-                names[s] = next(rest)
-        res = run_game(names, seed, dealer=dealer)
-        pts = res["points"]
-        deltas.append(pts[seat_a] - pts[seat_b])
-        ranks_a.append(1 + sum(1 for q in pts if q > pts[seat_a]))
-        ranks_b.append(1 + sum(1 for q in pts if q > pts[seat_b]))
-        if res["winner"] == seat_a:
-            wins_a += 1
-        elif res["winner"] == seat_b:
-            wins_b += 1
-        dealt_a += res["deal_ins"][seat_a] if "deal_ins" in res else 0
-        dealt_b += res["deal_ins"][seat_b] if "deal_ins" in res else 0
+        pair = 0.0
+        for swap in (False, True):
+            names = [None] * 4
+            names[seat_a] = b if swap else a
+            names[seat_b] = a if swap else b
+            rest = iter(field)
+            for s in range(4):
+                if names[s] is None:
+                    names[s] = next(rest)
+            res = run_game(names, seed, dealer=dealer)
+            pts = res["points"]
+            a_seat, b_seat = (seat_b, seat_a) if swap else (seat_a, seat_b)
+            pair += pts[a_seat] - pts[b_seat]
+            ranks_a.append(1 + sum(1 for q in pts if q > pts[a_seat]))
+            ranks_b.append(1 + sum(1 for q in pts if q > pts[b_seat]))
+            if res["winner"] == a_seat:
+                wins_a += 1
+            elif res["winner"] == b_seat:
+                wins_b += 1
+            dealt_a += res["deal_ins"][a_seat] if "deal_ins" in res else 0
+            dealt_b += res["deal_ins"][b_seat] if "deal_ins" in res else 0
+        deltas.append(pair / 2.0)
     return (deltas, ranks_a, ranks_b, wins_a, wins_b,
             dealt_a, dealt_b)
 
@@ -108,9 +116,10 @@ def main():
     print(f"{args.a} (seat 0) vs {args.b} (seat 1), field {'/'.join(field)}")
     print(f"games {n}  ·  mean paired score diff {mean:+.1f}  ±{ci:.1f} (95% CI)"
           f"  ·  sd {sd:.0f}  ·  SE {se:.1f}")
-    fourth_a = 100 * sum(1 for r in ranks_a if r == 4) / n
-    fourth_b = 100 * sum(1 for r in ranks_b if r == 4) / n
-    print(f"win% {100*wins_a/n:.1f} vs {100*wins_b/n:.1f}"
+    n_games = len(ranks_a)            # twice the seed count: mirrored pairs
+    fourth_a = 100 * sum(1 for r in ranks_a if r == 4) / n_games
+    fourth_b = 100 * sum(1 for r in ranks_b if r == 4) / n_games
+    print(f"win% {100*wins_a/n_games:.1f} vs {100*wins_b/n_games:.1f}"
           f"  ·  avg rank {statistics.fmean(ranks_a):.3f} vs "
           f"{statistics.fmean(ranks_b):.3f}"
           f"  ·  4th {fourth_a:.1f}% vs {fourth_b:.1f}%")
