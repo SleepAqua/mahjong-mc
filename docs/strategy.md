@@ -278,12 +278,29 @@ exists for a field where riichi gets punished harder than this one.
    dead, so a call that cannot reach yakuhai, tanyao or a one-suit hand is never
    taken. This is why chi is allowed at all — the old "peng only" version was
    stricter than the yaku rule needs.
-2. *the call is worth it*: it must strictly lower shanten. Two loosenings sit
-   behind switches, measured at 9,000 mirrored deals each and both level: a
-   pon of a value honour even at three shanten (`YAKUHAI_CALL_SHANTEN`), and a
-   call that keeps shanten but adds at least three ukeire (`CALL_SPEEDUP`).
-   They moved average rank by ~0.015 in our favour and nothing else, so they
-   are off — a real field with more open play is where to retest them.
+2. *the call is worth it*: either it lowers shanten, it completes a value
+   honour up to four shanten (`YAKUHAI_CALL_SHANTEN`), or it keeps shanten and
+   adds at least two ukeire (`CALL_SPEEDUP`). The general cap is three shanten
+   (`CALL_MAX_SHANTEN`).
+
+**Why the call gate is loose — the rank-1 bot.** 100 full-information replays of
+bot 323 ("NO.24", rating 1982) against 100 of ours, same analyser:
+
+                        NO.24        us
+    calls per kyoku      0.47       0.14
+    …at shanten 3 or 4     58/76      9/100
+    open wins            44%        19%
+    riichi wins          39%        70%
+    agari per kyoku      26.6%      12.0%
+    deal-in per kyoku     8.2%      21.3%
+
+It is not calling *because* a call improves its hand — most of its calls come
+when the hand is still three or four away. It is opening the yaku early and
+then racing a hand that will always be worth something, which is why 44% of its
+wins are open hands while we depend on riichi for 70% of ours. Opening up to
+match it measured **+0.020 average rank and 0.5 points of 4th rate at level
+points** (48,000 mirrored games, two independent fields), so it is shipped.
+Rank is what the arena grades on; points per game barely moved.
 
 Daiminkan is never taken (kills concealment for one extra draw). Chiitoitsu and
 kokushi are closed by definition.
@@ -301,14 +318,14 @@ Monte Carlo, 20,000 games, seed 42, 8 workers — all four seats in one field:
 
     seat policy          win%   tumo%    ron%  deal-in%  riichi%  pts/game  avg rank
     --------------------------------------------------------------------------------
-       0 louis         23.25%   5.83%  17.43%    11.62%   34.92%     268.1     2.267
-       1 gto           19.32%   5.29%  14.03%    12.50%   32.42%       4.7     2.368
-       2 defensive     16.39%   4.26%  12.13%    15.32%   12.83%    -135.2     2.088
-       3 greedy        16.20%   4.41%  11.79%    15.95%   13.37%    -139.1     2.110
+       0 louis         23.22%   5.83%  17.39%    11.71%   33.79%     252.7     2.258
+       1 gto           19.43%   5.32%  14.11%    12.40%   32.92%      17.3     2.374
+       2 defensive     16.23%   4.25%  11.97%    15.35%   12.80%    -141.9     2.090
+       3 greedy        16.25%   4.37%  11.88%    15.91%   13.30%    -135.9     2.106
 
 `avg rank` flatters the low-variance bots: `defensive` folds so much it rarely
 loses big and rarely wins big. `pts/game` is the honest metric, and `louis` is
-+263 points per game ahead of the next policy.
++235 points per game ahead of the next policy.
 
 **Know what this table cannot see.** Every simulated game is *one independent
 kyoku*: scores reset to 25,000, no carry-over, no dealer rotation, no all-last.
@@ -343,6 +360,36 @@ Fixing those by folding more (open hands and dama as threats) or by making suji
 stricter was measured and did not pay (§5, §6). The leak is not in the discard
 rules; it is in the driver (§11) and in what the bot cannot see at all —
 placement and dama.
+
+### Studying another bot
+
+RiichiLab publishes every ranked game as an mjai JSONL with all four hands
+revealed:
+
+    https://logs.riichi.dev/mjai-logs/YYYY/MM/DD/<game_id>.jsonl.gz
+
+`tools/fetch_replays.py --bot 323 --games 100` downloads a bot's recent games
+plus a game-id → seat map. That is the only way to see *why* a strong bot does
+what it does: the bot's own logs are masked, so they can show you its choices
+but never its reasons.
+
+What it showed about the rank-1 bot, beyond the call numbers in §8: our tile
+choice under a live riichi is not much worse than theirs. Share of discards that
+are *fresh* (neither genbutsu nor suji) while somebody is in riichi, by our
+shanten at the time:
+
+    shanten        NO.24     us
+      0             52%     56%
+      1             39%     45%
+      2             29%     37%
+      3             28%     33%
+      4             27%     40%
+
+So we throw slightly riskier tiles at every shanten, but the real difference is
+how often we are in that situation at all: they fold earlier and win the hands
+they commit to, we arrive at the same decisions later and with worse hands.
+That is the case for opening hands up (§8), not for another defence threshold —
+consistent with every defence change measuring level (§5, §6).
 
 ## 10. Can the bot learn from its own games (rule 11)?
 

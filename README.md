@@ -322,7 +322,25 @@ In-game input:
 - kan prompt: number, the kan name (`ankan`/`shouminkan`), or `0` no kan
 - between games: `y` play again / anything else exits
 
-### 3. Evolution search — `python3 -m examples.evolve`
+### 3. Study another bot — `python3 tools/fetch_replays.py`
+
+RiichiLab publishes every ranked game as an mjai JSONL with all four hands
+revealed (`logs.riichi.dev/mjai-logs/YYYY/MM/DD/<game_id>.jsonl.gz`). The bot's
+own logs are masked, so this is the only way to see why a strong bot decides
+what it decides.
+
+```
+--bot N              bot id whose recent ranked games to fetch
+--game ID            a single game instead
+--games N            default 20
+-o DIR               default ./replays
+```
+
+Writes `<dir>/<bot>_<game_id>.jsonl.gz` and `seats_<bot>.json` (game id → the
+bot's seat), then any mjai tool can read them. Analysing bot 323 this way is how
+the call gate in `docs/strategy.md` §8 was set.
+
+### 4. Evolution search — `python3 -m examples.evolve`
 
 ```
 --population N       int, default 8. Variants per generation.

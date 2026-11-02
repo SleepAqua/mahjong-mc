@@ -183,7 +183,7 @@ class LouisPolicy(Policy):
     # values, not the original guesses.
     HONOR_DEAD_TURN = 7    # turn after which a lone yakuhai is dead
     DANGER_WEIGHT = 2.0     # how hard danger subtracts from an attacking discard
-    CALL_MAX_SHANTEN = 2    # only call when the hand is this close
+    CALL_MAX_SHANTEN = 3    # only call when the hand is this close
     BLOCK_CUT = True        # five-block theory: cut the weakest of 6+ blocks
 
     # ---- threats that are not in riichi ------------------------------
@@ -201,13 +201,20 @@ class LouisPolicy(Policy):
     # ---- speed, value, and where the leak actually is ----------------
     # We call 0.15/kyoku where the online field calls 0.41, win 17% of kyoku
     # where the field wins 24%, and are noten in 46% of exhaustive draws.
-    CALL_SPEEDUP = 0        # min ukeire gain that justifies a call at equal shanten
-    YAKUHAI_CALL_SHANTEN = 0  # pon a value honour at up to this shanten (0=off)
+    # Shipped values come from bot 323 ("NO.24", rank 1): 0.47 calls/kyoku
+    # against our 0.14, and 58 of its 76 calls at shanten 3-4 — it opens the
+    # yaku early and races open (44% of its wins) instead of waiting for a
+    # call that lowers shanten. Measured over 48,000 mirrored games in two
+    # fields: points level (+6 ±17), average rank 0.020 better, 4th rate 0.5
+    # points lower. Rank is what the arena grades on, so the trade is taken.
+    CALL_SPEEDUP = 2        # min ukeire gain that justifies a call at equal shanten
+    YAKUHAI_CALL_SHANTEN = 4  # pon a value honour at up to this shanten (0=off)
     NOTEN_SPRINT_WALL = 0   # at/below this wall_left, sprint for tenpai (0=off)
     SCORED_VALUE = False    # value the wait with the real scorer, not the table
     RICHI_MIN_VALUE = 0     # minimum points to declare riichi (0 = any tenpai)
     CANDIDATE_RISK = False  # fold cost from the cheapest discard, not the hand mean
     LONE_AUTHORITY_TURNS = 99  # rule 1 outranks tile efficiency for this many draws
+    HARD_FOLD_SHANTEN = 3   # fold at this shanten against a riichi (see §5)
     LOSS_POINTS = 5200      # points a deal-in costs, before dealer doubling
     FOLD_EV = -1500         # what a clean fold is worth; push must beat it
     PUSH_WHEN_LAST = True   # from 4th place late in the hand, push harder…
@@ -494,7 +501,7 @@ class LouisPolicy(Policy):
         elif pressure < 0:
             fold_ev += 700.0               # protecting a lead is worth more
         push_ev = self._push_ev(view, total, threats, sh)
-        if sh >= 3:
+        if sh >= self.HARD_FOLD_SHANTEN:
             return True                    # too far to be worth a dangerous tile
         return push_ev < fold_ev
 
