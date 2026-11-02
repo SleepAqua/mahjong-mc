@@ -9,8 +9,9 @@ games are needed.
     python3 tools/ab_test.py --pilot 2000          # measure variance, tell N
     python3 tools/ab_test.py --games 20000         # run the real test
 
-Seat A gets seat 0, seat B gets seat 1, and the dealer rotates with the game
-index, so both see every dealer position equally often.
+Seats rotate per game (A and B sit in every seat pair equally often) and the
+dealer is chosen independently of where A sits, so neither policy gets a
+positional edge. Fixed seats matter: seat 0 used to beat itself by +72 points.
 """
 from __future__ import annotations
 
@@ -33,20 +34,32 @@ def _worker(args):
         load_policy_file(path)
     deltas, ranks_a, ranks_b, wins_a, wins_b, dealt_a, dealt_b = \
         [], [], [], 0, 0, 0, 0
-    names = [a, b] + list(field)
     for k in range(count):
-        res = run_game(names, seed0 + k, dealer=(seed0 + k) % 4)
+        seed = seed0 + k
+        # Rotate the seats. Fixed seats 0/1 gave seat 0 a free +72 points and
+        # 0.14 places (v_base vs v_base "won" +72 ±105), which is larger than
+        # most real effects and would have masked them.
+        seat_a = seed % 4
+        seat_b = (seat_a + 1) % 4
+        dealer = (seed // 4) % 4          # independent of where A sits
+        names = [None] * 4
+        names[seat_a] = a
+        names[seat_b] = b
+        rest = iter(field)
+        for s in range(4):
+            if names[s] is None:
+                names[s] = next(rest)
+        res = run_game(names, seed, dealer=dealer)
         pts = res["points"]
-        deltas.append(pts[0] - pts[1])
-        order = sorted(range(4), key=lambda i: -pts[i])
-        ranks_a.append(order.index(0) + 1)
-        ranks_b.append(order.index(1) + 1)
-        if res["winner"] == 0:
+        deltas.append(pts[seat_a] - pts[seat_b])
+        ranks_a.append(1 + sum(1 for q in pts if q > pts[seat_a]))
+        ranks_b.append(1 + sum(1 for q in pts if q > pts[seat_b]))
+        if res["winner"] == seat_a:
             wins_a += 1
-        elif res["winner"] == 1:
+        elif res["winner"] == seat_b:
             wins_b += 1
-        dealt_a += res["deal_ins"][0] if "deal_ins" in res else 0
-        dealt_b += res["deal_ins"][1] if "deal_ins" in res else 0
+        dealt_a += res["deal_ins"][seat_a] if "deal_ins" in res else 0
+        dealt_b += res["deal_ins"][seat_b] if "deal_ins" in res else 0
     return (deltas, ranks_a, ranks_b, wins_a, wins_b,
             dealt_a, dealt_b)
 

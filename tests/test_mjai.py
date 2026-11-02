@@ -177,6 +177,43 @@ class TestBotEntryPoint(unittest.TestCase):
         self.assertEqual([a["type"] for a in actions], ["reach", "dahai"])
 
 
+class TestRedFiveValue(unittest.TestCase):
+    """A red five is a dora; the 34-type encoding must not lose it."""
+
+    def _bot(self):
+        bot = MjaiBot(make_policy("louis", seed=1), 0)
+        bot.reactive = True
+        hand = ["1m", "2m", "3m", "5mr", "7p", "9p", "3s", "6s", "9s",
+                "S", "W", "W", "N"]
+        ev = start_kyoku([hand] + [["?"] * 13 for _ in range(3)])
+        ev["dora_marker"] = "2s"        # -> dora is 3s, which the hand holds
+        bot.on_event(ev, decide=False)
+        return bot
+
+    def test_red_five_counts_as_dora(self):
+        bot = self._bot()
+        self.assertEqual(bot.aka[0], 1)
+        # one 3s dora from the indicator + the red five itself
+        self.assertEqual(bot._view().dora_count, 2)
+
+    def test_red_five_stacks_with_an_indicator_dora(self):
+        bot = self._bot()
+        ev = start_kyoku([["1m", "2m", "3m", "5mr", "7p", "9p", "3s", "6s",
+                           "9s", "S", "W", "W", "N"]]
+                         + [["?"] * 13 for _ in range(3)])
+        ev["dora_marker"] = "4m"        # -> dora is 5m, the red copy
+        bot2 = MjaiBot(make_policy("louis", seed=1), 0)
+        bot2.reactive = True
+        bot2.on_event(ev, decide=False)
+        self.assertEqual(bot2._view().dora_count, 2)
+
+    def test_discarding_the_red_five_drops_the_count(self):
+        bot = self._bot()
+        bot.on_event({"type": "dahai", "actor": 0, "pai": "5mr"},
+                     decide=False)
+        self.assertEqual(bot.aka[0], 0)
+
+
 class TestRedFiveDiscard(unittest.TestCase):
     """The server lists '5pr' before '5p' — never throw the aka dora away."""
 

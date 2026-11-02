@@ -190,6 +190,21 @@ class LouisPolicy(Policy):
     BLOCK_CUT = True        # five-block theory: cut the weakest of 6+ blocks
     EV_FOLD = True          # push/fold by expectation, not by threshold
 
+    # ---- threats that are not in riichi ------------------------------
+    # Over the 100 logged games 30% of our deal-ins went to *open* hands and
+    # another 8% to dama, yet the threat list only knew about riichi seats --
+    # so against those hands the bot played pure offence into fresh middles.
+    # Off by default: paired A/B (24k games) measured it neutral-to-worse
+    # (+30 to +75 points for the *old* policy, 4th% unchanged), so it is a
+    # switch to revisit against a stronger field, not a shipped default.
+    SOFT_DANGER = 0.0       # weight on danger from non-riichi opponents
+    SOFT_WALL = 45          # wall_left at/below which every opponent counts
+    SOFT_FOLD_SHANTEN = 2   # shanten at which soft threats are enough to fold
+    SUJI_RESIDUAL = 0.0     # suji danger as a fraction of a fresh tile (0=free)
+    PUSH_WHEN_LAST = True   # from 4th place late in the hand, push harder…
+    DESPERATE_GAP = 12000   # …but only when 3rd is this far ahead (a mangan
+                            # will not save the placement, folding cannot either)
+
     # ---- defence -----------------------------------------------------
 
     @staticmethod
@@ -230,11 +245,28 @@ class LouisPolicy(Policy):
         return danger_free
 
     @classmethod
+    def _is_suji(cls, view, t, threat):
+        """True when 1-4-7 / 2-5-8 / 3-6-9 makes t only a two-sided trap."""
+        if t >= 27:
+            return False
+        disc = view.discards[threat]
+        n = t % 9
+        base = t - n
+        for d in (-3, 3):
+            if 0 <= n + d <= 8 and (base + n + d) in disc:
+                return True
+        return False
+
+    @classmethod
     def _danger(cls, view, t, threats):
-        """Bigger = more dangerous. Used only to order risky discards."""
+        """Bigger = more dangerous. Used only to order risky discards.
+
+        Per threat, because "safe" is per threat: a tile in one opponent's
+        pond is still live against the other two. Suji used to count as free
+        (danger 0); in reality a suji middle is roughly a quarter as dangerous
+        as a fresh one, so SUJI_RESIDUAL scales it instead of zeroing it.
+        """
         if not threats:
-            return 0
-        if cls._safe_against(view, t, threats):
             return 0
         visible = cls._visible(view, t)
         if visible >= 4:                  # walled: nobody can hold a pair
@@ -249,12 +281,40 @@ class LouisPolicy(Policy):
             score = 70
         elif n in (2, 6):
             score = 85
-        else:
-            score = 100
         if visible >= 3:                  # thin wait -> safer
             score -= 25
-        score += sum(cls._pond_read(view, t, s) for s in threats)
-        return max(0, score)
+        total = 0.0
+        for s in threats:
+            if t in view.discards[s]:     # genbutsu: cannot be a ron here
+                continue
+            if t >= 27 and visible - view.counts[t] >= 2:
+                continue                  # pair wait with the copies gone
+            d = score + cls._pond_read(view, t, s)
+            if cls.SUJI_RESIDUAL > 0 and cls._is_suji(view, t, s):
+                d *= cls.SUJI_RESIDUAL
+            total += d
+        return max(0, int(total / len(threats)))
+
+    @classmethod
+    def _soft_threats(cls, view):
+        """Opponents who can ron without riichi: open hands, and late in the
+        hand anyone at all — a dama tenpai looks exactly like a normal hand."""
+        if cls.SOFT_DANGER <= 0:
+            return []
+        out = []
+        for s in range(4):
+            if s == view.seat or view.riichi[s]:
+                continue
+            if view.melds_all[s] or view.wall_left <= cls.SOFT_WALL:
+                out.append(s)
+        return out
+
+    def _threat_danger(self, view, t, threats, soft=()):
+        """Danger of t, riichi threats at full weight, the rest discounted."""
+        d = self._danger(view, t, threats) * self.DANGER_WEIGHT
+        if soft and self.SOFT_DANGER:
+            d += self._danger(view, t, soft) * self.SOFT_DANGER
+        return d
 
     @classmethod
     def _pond_read(cls, view, t, threat):
@@ -345,7 +405,14 @@ class LouisPolicy(Policy):
             return 0
         place = 1 + sum(1 for p in pts if p > mine)
         if place == 4 and view.wall_left < 35:
-            return 1                       # last place: folding loses anyway
+            # Desperation only when defence cannot save the placement. The old
+            # rule pushed unconditionally from 4th; in the 100 logged games
+            # 51% of our deal-ins happened in 4th place against 30% of our
+            # discards, so it was buying deal-ins without buying rank.
+            third = sorted(pts, reverse=True)[2]
+            if self.PUSH_WHEN_LAST and third - mine >= self.DESPERATE_GAP:
+                return 1
+            return 0
         if place <= 2 and mine - min(pts) > 8000:
             return -1                      # protect the lead
         return 0
@@ -390,6 +457,7 @@ class LouisPolicy(Policy):
         force_seven = pairs >= 4          # rule 5: four pairs -> seven pairs
 
         threats = [s for s in range(4) if s != seat and view.riichi[s]]
+        soft = self._soft_threats(view)
         best_sh = 8
         pool = []
         for t in sorted(set(view.hand)):
@@ -408,19 +476,27 @@ class LouisPolicy(Policy):
 
         tenpai = best_sh == 0
         folding = self._should_fold(view, total, threats, best_sh)  # rule 6
+        if (not folding and soft and not threats and not tenpai
+                and best_sh >= self.SOFT_FOLD_SHANTEN
+                and view.wall_left <= self.SOFT_WALL):
+            # nobody in riichi, but the hand is late and far away: a live
+            # middle is not worth a deal-in to a hand we cannot see
+            folding = True
 
         if folding:
             # betaori: safety first, hand shape ignored. Among equally safe
             # tiles prefer one from a *pair* that is already safe — its twin
             # is a guaranteed safe discard next turn (mawashiuchi).
+            everyone = threats + soft
+
             def fold_key(x):
                 t = x[1]
-                danger = self._danger(view, t, threats)
+                danger = self._threat_danger(view, t, threats, soft)
                 safe_twin = 1
                 if danger == 0 and total[t] >= 2:
                     twin = list(total)
                     twin[t] -= 1
-                    if self._safe_against(view, t, threats):
+                    if self._safe_against(view, t, everyone):
                         safe_twin = 0
                 return (danger, safe_twin, -self._visible(view, t),
                         self.rng.random())
@@ -443,7 +519,7 @@ class LouisPolicy(Policy):
                 _lone_rank(total, x[1], seat, dealer, turn=view.turn,
                            seen=self._visible(view, x[1]) - total[x[1]]),
                 1 if x[1] in dora else 0,
-                self._danger(view, x[1], threats),
+                self._threat_danger(view, x[1], threats, soft),
                 self.rng.random(),
             ))[1]
 
@@ -458,8 +534,8 @@ class LouisPolicy(Policy):
             sec = _shape_score(c) * 3
             dora_pen = 30 * (1 if t in dora else 0) + 12 * (total[t] - 1 if t in dora else 0)
             danger = 0
-            if threats and not tenpai:
-                danger = self._danger(view, t, threats) * self.DANGER_WEIGHT
+            if (threats or soft) and not tenpai:
+                danger = self._threat_danger(view, t, threats, soft)
             # five-block theory: with too many blocks, cut the weakest one
             weak = (_growth(total, t) * 6
                     if block_count >= 6 and self.BLOCK_CUT else 0)

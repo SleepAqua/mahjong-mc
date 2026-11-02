@@ -312,6 +312,58 @@ place that tells us whether it worked.
   neighbourhoods. Crude, but it sees what suji alone cannot.
 * **rule 6: push/fold by hand value** instead of "tenpai or not" — see §5.
 
+### The 2026-11-02 losing streak: what the games actually say
+
+Six consecutive 4ths (11:49–12:18), all narrow (−5100, +10900, −6500, −3500,
++9200, +6700), none of them chombos. Across the 100 logged games (949 kyoku):
+
+    us      agari 17.2%/kyoku   deal-in 29.4%
+    field   agari 23.9%         deal-in 19.8%
+
+so the bot was not unlucky, it was losing the fight on both sides of the table.
+Where the deal-ins came from: 62% to a declared riichi, 30% to an **open**
+hand, 8% to dama. And 51% of them happened while we were in 4th place, against
+30% of our discards — about twice the deal-in rate per discard, in the one place
+the policy deliberately changes behaviour (`_score_pressure` returned "+1 push"
+from 4th regardless of the gap).
+
+What that produced:
+
+* **chombo from claim spelling.** Two chombos in the logs were `chi`/`pon`
+  sent with `consumed: ["5p","5p"]` while one copy was the red five; the server
+  answered `not_in_legal_actions` and ended the round (mangan). Claims are now
+  answered with the server's own option dict.
+* **red fives thrown away.** 54 discards took the aka dora out while a plain
+  copy was in hand, because the server lists `5pr` before `5p` and the driver
+  took the first match.
+* **red fives not valued.** The 34-type engine cannot see that a 5 is red, so
+  `_hand_value` under-counted every hand holding one by a han. The driver now
+  tracks the red fives it holds and adds them to `dora_count`.
+* **desperation push.** The 4th-place push is now gated on the gap to third
+  (`DESPERATE_GAP`, 12,000): push when a mangan will not save the placement,
+  play normally when it will.
+
+### What was tried and rejected (measured, not argued)
+
+Paired A/B, 24,000 games each, fixed seed, seats rotated:
+
+    variant                                 excess vs control      verdict
+    open hands / late hand as threats       +30 pts, 4th% flat     neutral
+    suji keeps residual danger (0.3)        +35 pts, 4th% flat     neutral
+
+Both were worth testing — 38% of the deal-ins are to hands the threat list
+ignored — but neither pays for the extra folding in this field. They stay as
+off-by-default switches (`SOFT_DANGER`, `SUJI_RESIDUAL`).
+
+**Harness caveat, now fixed:** `tools/ab_test.py` pinned A to seat 0, and a
+policy playing itself "won" +75 points and 0.14 places. Seats now rotate. Any
+pre-2026-11 A/B result smaller than that offset is not evidence.
+
+**Simulator caveat:** the local field deals in 11.6% where the online field
+deals in 29.4% for the same policy. The local sim cannot rank defensive
+changes for the online arena; it can only reject clearly bad ones.
+
+
 ### Measurement honesty, and how many games a test needs
 
 Rules changes are easy to make and hard to prove. Three independent 1,000-game

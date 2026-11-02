@@ -54,7 +54,7 @@ class MjaiView:
 
     def __init__(self, seat, turn, counts, melds, discards, melds_all,
                  wall_left, last_discard, dealer, points, riichi,
-                 can_riichi, dora_indicators, last_drawn):
+                 can_riichi, dora_indicators, last_drawn, aka=0):
         self.seat = seat
         self.turn = turn
         self.counts = counts                     # private list
@@ -73,7 +73,10 @@ class MjaiView:
         self.riichi_sticks = 0
         self.can_riichi = can_riichi
         self.dora_indicators = tuple(dora_indicators)
-        self.dora_count = count_dora(counts, list(melds), dora_indicators)
+        # A red five is a dora of its own; the 34-type encoding loses that,
+        # so the driver passes the count of red fives we actually hold.
+        self.dora_count = (count_dora(counts, list(melds), dora_indicators)
+                           + aka)
         self.last_drawn = last_drawn
 
     @property
@@ -123,6 +126,7 @@ class MjaiBot:
         self.melds = [[] for _ in range(4)]
         self.discards = [[] for _ in range(4)]
         self.riichi = [False] * 4
+        self.aka = [0] * 4          # red fives held (ours is the one we know)
         self.dora_indicators = []
         self.points = [25000] * 4
         self.dealer = 0
@@ -159,6 +163,7 @@ class MjaiBot:
             can_riichi=can_riichi,
             dora_indicators=list(self.dora_indicators),
             last_drawn=self.last_drawn if just_drew else None,
+            aka=self.aka[me],
         )
 
     def _total(self, seat):
@@ -262,11 +267,14 @@ class MjaiBot:
         if isinstance(scores, list) and len(scores) == 4:
             self.points = list(scores)
         tehais = ev.get("tehais") or []
+        self.aka = [0] * 4
         for seat, tiles_ in enumerate(tehais):
             for pai in tiles_:
                 if pai == "?":
                     continue  # masked (other players' hands)
                 self.counts[seat][mjai_to_id(pai)] += 1
+                if pai.endswith("r") and seat == self.me:
+                    self.aka[seat] += 1
         return []
 
     def _on_tsumo(self, ev, decide=True):
@@ -283,6 +291,8 @@ class MjaiBot:
             self._trigger = "discard"
             return []
         self.counts[actor][t] += 1
+        if actor == self.me and pai.endswith("r"):
+            self.aka[actor] += 1
         self.wall_left = max(0, self.wall_left - 1)
         if actor != self.me:
             return []
@@ -341,6 +351,9 @@ class MjaiBot:
 
     def _on_dahai(self, ev, decide=True):
         actor = ev.get("actor")
+        if actor == self.me and isinstance(ev.get("pai"), str) \
+                and ev["pai"].endswith("r"):
+            self.aka[actor] = max(0, self.aka[actor] - 1)
         t = mjai_to_id(ev["pai"])
         self.discards[actor].append(t)
         self.last_discard = (actor, t)
@@ -435,6 +448,10 @@ class MjaiBot:
             t = mjai_to_id(pai)
             trio = tuple(sorted([t] + consumed))
             meld_kind = "chi"
+        if actor == self.me:
+            for c in ev.get("consumed") or []:
+                if isinstance(c, str) and c.endswith("r"):
+                    self.aka[actor] = max(0, self.aka[actor] - 1)
         already = any(m[0] == trio or
                       (meld_kind == SHOUMINKAN and m[1] == SHOUMINKAN
                        and m[0][0] == t)
