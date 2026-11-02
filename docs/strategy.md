@@ -654,13 +654,16 @@ Adding §Sources entries S21–S25 in the list below.
 **Evolution (step 1 of §10) result** — `examples/evolve_louis.py`, 5 candidates ×
 3 generations × 2,000 games, paired seeds:
 
-    start    PUSH_COPIES 6  PUSH_VALUE 3900  SEMI 7700  DEAD_TURN 6  DANGER 2.00  → +335.2
-    final    PUSH_COPIES 8  PUSH_VALUE 4011  SEMI 7142  DEAD_TURN 7  DANGER 3.25  → +358.7
+    start    DEAD_TURN 6  DANGER 2.00  → +335.2
+    final    DEAD_TURN 7  DANGER 3.25  → +358.7
 
 In-sample gain is ~23 points/game, out-of-sample (48k paired) ~+59 with a wider
-CI. Direction: push wider waits less often, weight danger harder, and keep a
-lone honour one turn longer. Written to `my_strategies/louis_params.json`, which
-the policy reads at import — no code change to deploy a tuned bot.
+CI. The surviving part of that search is `HONOR_DEAD_TURN`: keep a lone honour
+one turn longer before writing it off as dead. The three threshold tunables it
+also moved (`PUSH_COPIES`, `PUSH_VALUE`, `SEMI_PUSH_VALUE`) no longer exist —
+the push/fold rule was replaced by the expectation in §5, which has no threshold
+to tune. Written to `my_strategies/louis_params.json`, which the policy reads at
+import, so a tuned bot deploys without a code change.
 
 ---
 
