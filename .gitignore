@@ -11,3 +11,6 @@ results/
 # simulation output and logs, not source
 logs/
 *.log
+
+# generated daily digests
+docs/reports/

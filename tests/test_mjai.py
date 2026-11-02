@@ -177,5 +177,49 @@ class TestBotEntryPoint(unittest.TestCase):
         self.assertEqual([a["type"] for a in actions], ["reach", "dahai"])
 
 
+class TestRedFiveDiscard(unittest.TestCase):
+    """The server lists '5pr' before '5p' — never throw the aka dora away."""
+
+    def test_prefers_plain_copy(self):
+        acts = [{"type": "dahai", "pai": "5pr"},
+                {"type": "dahai", "pai": "6p"},
+                {"type": "dahai", "pai": "5p"}]
+        out = MjaiBot._legalize({"type": "dahai", "pai": "5p"}, acts)
+        self.assertEqual(out["pai"], "5p")
+
+    def test_keeps_red_when_that_is_the_only_copy(self):
+        acts = [{"type": "dahai", "pai": "5pr"},
+                {"type": "dahai", "pai": "6p"}]
+        out = MjaiBot._legalize({"type": "dahai", "pai": "5p"}, acts)
+        self.assertEqual(out["pai"], "5pr")
+
+    def test_other_discards_untouched(self):
+        acts = [{"type": "dahai", "pai": "5pr"},
+                {"type": "dahai", "pai": "9s"}]
+        out = MjaiBot._legalize({"type": "dahai", "pai": "9s"}, acts)
+        self.assertEqual(out["pai"], "9s")
+
+    def test_pon_uses_the_server_consumed_spelling(self):
+        # the chombo in logs/games: pon 5p with ["5p","5p"] while the server
+        # wanted the red copy named explicitly
+        acts = [{"type": "pon", "pai": "5p", "actor": 0,
+                 "consumed": ["5pr", "5p"]}]
+        out = MjaiBot._legalize(
+            {"type": "pon", "pai": "5p", "consumed": ["5p", "5p"]}, acts)
+        self.assertEqual(sorted(out["consumed"]), ["5p", "5pr"])
+
+    def test_chi_picks_the_requested_sequence(self):
+        acts = [{"type": "chi", "pai": "3s", "actor": 0,
+                 "consumed": ["4s", "5sr"]},
+                {"type": "chi", "pai": "3s", "actor": 0,
+                 "consumed": ["1s", "2s"]}]
+        out = MjaiBot._legalize(
+            {"type": "chi", "pai": "3s", "consumed": ["4s", "5s"]}, acts)
+        self.assertEqual(sorted(out["consumed"]), ["4s", "5sr"])
+        out = MjaiBot._legalize(
+            {"type": "chi", "pai": "3s", "consumed": ["2s", "1s"]}, acts)
+        self.assertEqual(sorted(out["consumed"]), ["1s", "2s"])
+
+
 if __name__ == "__main__":
     unittest.main()

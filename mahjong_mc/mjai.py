@@ -590,10 +590,19 @@ class MjaiBot:
                 except Exception:
                     tile = None
                 pai = id_to_mjai(tile) if tile is not None else a["pai"]
-                legal = {p["pai"] for p in possible_actions
-                         if p.get("type") == "dahai"}
-                return {"type": "dahai",
-                        "pai": pai if pai in legal else a["pai"]}
+                # same red-five rule as _legalize: prefer the plain copy
+                def _plain(p):
+                    return str(p).endswith("r")
+                legal = sorted(
+                    (p["pai"] for p in possible_actions
+                     if p.get("type") == "dahai"),
+                    key=_plain)
+                pick = next((p for p in legal if p == pai), None)
+                if pick is None:
+                    pick = next((p for p in legal
+                                 if _plain(p) is False and _plain(pai)
+                                 and p == pai[:-1]), None)
+                return {"type": "dahai", "pai": pick or legal[0]}
         return {"type": "none"}
 
     @staticmethod
@@ -610,6 +619,12 @@ class MjaiBot:
         fives "5mr"/"5pr"/"5sr", and holding the red copy means "5p" is not
         a legal discard while "5pr" alone is. Exact-string matching fell
         through to the random legal fallback in that case.
+
+        Claims (chi/pon/kan) have the same problem one level deeper: the
+        `consumed` list must use the server's own red-five spelling or the
+        action comes back "not_in_legal_actions" and the round ends in a
+        chombo. So claims are matched on tile type plus the *multiset* of
+        consumed tiles and answered with the server's option dict.
         """
         if action.get("type") == "hora":
             for p in possible_actions:
@@ -620,11 +635,33 @@ class MjaiBot:
             return pai[:-1] if isinstance(pai, str) and pai.endswith("r") \
                 else pai
 
+        def norm_set(vals):
+            return sorted(norm(v) for v in vals or [])
+
         if action.get("type") == "dahai":
             want = norm(action.get("pai"))
+            cands = [p for p in possible_actions
+                     if p.get("type") == "dahai"
+                     and norm(p.get("pai")) == want]
+            if cands:
+                # The server lists the red copy before the plain one
+                # ('5pr', …, '5p'). Taking the first match threw the aka
+                # dora away 54 times while a plain five was in hand, so
+                # always prefer the plain spelling.
+                cands.sort(key=lambda p: str(p.get("pai", "")).endswith("r"))
+                return dict(cands[0])   # keep the server's exact spelling
+
+        if action.get("type") in ("chi", "pon", "kan", "daiminkan", "ankan",
+                                  "kakan"):
+            want_c = norm_set(action.get("consumed"))
             for p in possible_actions:
-                if p.get("type") == "dahai" and norm(p.get("pai")) == want:
-                    return dict(p)          # keep the server's exact spelling
+                if p.get("type") != action.get("type"):
+                    continue
+                if norm(p.get("pai")) != norm(action.get("pai")):
+                    continue
+                # same sequence / same pair, whatever the red-five spelling
+                if norm_set(p.get("consumed")) == want_c:
+                    return dict(p)
 
         def matches(a, b):
             if a.get("type") != b.get("type"):

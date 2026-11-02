@@ -96,8 +96,10 @@ case "$cmd" in
   status)
     systemctl --user is-active "$UNIT" >/dev/null 2>&1 \
       && echo "service: running" || echo "service: stopped"
-    preflight
-    $PY tools/riichi_report.py --days 1 || echo "(digest unavailable)"
+    # print and quit: rating/rank/newest game only — `riichi report` is the
+    # digest. Bounded so a slow API can never make this hang.
+    RIICHI_DEADLINE=20 timeout -k 2 30 $PY tools/riichi_report.py --brief \
+      || echo "(live stats unavailable — API slow or unreachable)"
     ;;
   report)
     exec $PY tools/riichi_report.py "$@"
